@@ -118,6 +118,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                 const fn = new Promise<
                     DateObjectSummary & { index: number } & { state: JobState; next: JobState }
                 >(async (resolve) => {
+                    await wait(3000 + Math.random() * 1000); // 攻撃にならないように
                     await navigate(tab.id!, v);
                     await jsonFirst(summaryStream);
                     const jobInfo = (await getJobInfoFromTable(tab.id!)) as [JobState, ...never[]];
@@ -183,6 +184,13 @@ const fetchResponse = (
                 resolve(responseJson);
             }
         )
+    );
+
+const wait = (time: number) =>
+    new Promise((resolve) =>
+        setTimeout(() => {
+            resolve();
+        }, time)
     );
 
 const getJobInfoFromTable = (tabId: number) =>
