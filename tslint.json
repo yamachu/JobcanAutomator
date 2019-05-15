@@ -1,0 +1,24 @@
+{
+    "extends": ["tslint:latest"],
+    "rules": {
+        "quotemark": [true, "single", "jsx-double", "avoid-escape"],
+        "whitespace": [
+            true,
+            "check-branch",
+            "check-decl",
+            "check-operator",
+            "check-module",
+            "check-separator",
+            "check-type",
+            "check-typecast"
+        ],
+        "trailing-comma": [false],
+        "no-console": false,
+        "no-submodule-imports": false,
+        "object-literal-sort-keys": false,
+        "variable-name": false,
+        "no-implicit-dependencies": [true],
+        "interface-name": false
+    }
+}
+

@@ -1,0 +1,11 @@
+{
+    "manifest_version": 2,
+    "short_name": "JobcanAutomator",
+    "name": "JobcanAutomator",
+    "version": "0.0.1",
+    "background": {
+        "scripts": ["./background.js"],
+        "persistent": false
+    },
+    "permissions": ["debugger", "contextMenus", "tabs", "https://ssl.jobcan.jp/employee*"]
+}
