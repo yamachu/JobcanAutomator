@@ -1,12 +1,6 @@
-import { from, Observable, Subject, Subscription } from 'rxjs';
-import { distinctUntilChanged, filter, first, flatMap, tap } from 'rxjs/operators';
-import {
-    DateObjectSummary,
-    JobState,
-    ModifiedAttendanceMessage,
-    ProcessMessage,
-    SelectDatesMessage,
-} from './Contract';
+import { Observable, Subject } from 'rxjs';
+import { distinctUntilChanged, filter, first } from 'rxjs/operators';
+import { JobState } from './Contract';
 
 interface ControllWindowIds {
     windowId: number;
@@ -23,45 +17,47 @@ interface ResponseBody extends ResponseHeader {
     requestId: string;
 }
 
+const enum MenuID {
+    Base = 'JobcanAutomator',
+    Attendance = 'JobcanAutomator@attendance',
+    Leave = 'JobcanAutomator@leave',
+}
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
-        title: 'JobcanAutomatorを起動する',
-        id: 'JobcanAutomator',
+        title: 'JobcanAutomator',
+        id: MenuID.Base,
         contexts: ['all'],
         type: 'normal',
+        documentUrlPatterns: ['https://ssl.jobcan.jp/employee/attendance*'],
+    });
+
+    chrome.contextMenus.create({
+        title: '定時出勤',
+        contexts: ['all'],
+        type: 'normal',
+        parentId: MenuID.Base,
+        id: MenuID.Attendance,
+    });
+
+    chrome.contextMenus.create({
+        title: '定時退勤',
+        contexts: ['all'],
+        type: 'normal',
+        parentId: MenuID.Base,
+        id: MenuID.Leave,
     });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    if (info.menuItemId !== 'JobcanAutomator') {
-        return;
-    }
-    if (tab === undefined) {
-        return;
-    }
-    if (tab.url === undefined) {
-        return;
-    }
-    if (tab.url.indexOf('https://ssl.jobcan.jp/employee') === -1) {
-        return;
-    }
+const attendanceAsync = async (tabId: number, url: string) => {
+    const ids = await createControlWindow(url);
 
     const debuggee: chrome.debugger.Debuggee = {
-        tabId: tab!.id,
+        tabId: ids.tabId,
     };
 
-    const controllWindow = await createControlWindow();
-    const disposable = new Subscription();
     const responseHandledStream = new Subject<ResponseBody>();
-    const controllerStream = new Subject<ProcessMessage>();
     const requestMap = new Map<string, ResponseHeader | null>();
-
-    chrome.windows.onRemoved.addListener((windowId) => {
-        if (windowId === controllWindow.windowId) {
-            chrome.debugger.detach(debuggee);
-            disposable.unsubscribe();
-        }
-    });
 
     await new Promise((resolve) => chrome.debugger.attach(debuggee, '1.3', () => resolve()));
 
@@ -85,18 +81,66 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
     chrome.debugger.sendCommand(debuggee, 'Network.enable');
 
-    // ControllWindowとの通信
-    chrome.runtime.onMessage.addListener((msg, sender, response) => {
-        if (
-            sender.tab!.windowId !== controllWindow.windowId ||
-            sender.tab!.id !== controllWindow.tabId
-        ) {
-            return;
-        }
+    const summaryStream = responseHandledStream.pipe(
+        filter((f) => f.mimeType === 'application/json'),
+        filter((f) => f.url.indexOf('https://ssl.jobcan.jp/employee/adit/get-summary/') !== -1),
+        distinctUntilChanged((a, b) => a.requestId === b.requestId)
+    );
 
-        controllerStream.next(msg);
-        response();
+    const editAttendaceStream = responseHandledStream.pipe(
+        filter((f) => f.mimeType === 'application/json'),
+        filter((f) => f.url.indexOf('https://ssl.jobcan.jp/employee/adit/insert/') !== -1),
+        distinctUntilChanged((a, b) => a.requestId === b.requestId)
+    );
+
+    await jsonFirst(summaryStream);
+    const jobInfo = (await getJobInfoFromTable(ids.tabId)) as [JobState, ...never[]];
+    switch (jobInfo[0]) {
+        case 0:
+        case 2:
+            await attendance(ids.tabId, '0930');
+            await jsonFirst(editAttendaceStream);
+            break;
+        default:
+            break;
+    }
+
+    chrome.debugger.detach(debuggee, () =>
+        chrome.tabs.remove(ids.tabId, () => chrome.windows.remove(ids.windowId))
+    );
+};
+
+const leaveAsync = async (tabId: number, url: string) => {
+    const ids = await createControlWindow(url);
+
+    const debuggee: chrome.debugger.Debuggee = {
+        tabId: ids.tabId,
+    };
+
+    const responseHandledStream = new Subject<ResponseBody>();
+    const requestMap = new Map<string, ResponseHeader | null>();
+
+    await new Promise((resolve) => chrome.debugger.attach(debuggee, '1.3', () => resolve()));
+
+    // Jobcanのページからのイベント
+    chrome.debugger.onEvent.addListener(async (source, method, params: any) => {
+        if (method === 'Network.loadingFinished') {
+            const requestId = params.requestId;
+            const header = requestMap.get(requestId);
+            requestMap.delete(requestId);
+            const resp = await fetchResponse(debuggee, requestId, header!);
+            responseHandledStream.next(resp);
+        } else if (method === 'Network.responseReceived') {
+            const requestId = params.requestId;
+            const header: ResponseHeader = {
+                mimeType: params.response.mimeType,
+                url: params.response.url,
+            };
+            requestMap.set(requestId, header);
+        }
     });
+
+    chrome.debugger.sendCommand(debuggee, 'Network.enable');
 
     const summaryStream = responseHandledStream.pipe(
         filter((f) => f.mimeType === 'application/json'),
@@ -110,59 +154,74 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         distinctUntilChanged((a, b) => a.requestId === b.requestId)
     );
 
-    controllerStream
-        .pipe(filter((v) => v.type === 'P2B@SelectDates'))
-        .pipe(flatMap((v) => from((v as SelectDatesMessage).dates)))
-        .pipe(
-            flatMap((v: DateObjectSummary & { index: number }) => {
-                const fn = new Promise<
-                    DateObjectSummary & { index: number } & { state: JobState; next: JobState }
-                >(async (resolve) => {
-                    await wait(3000 + Math.random() * 1000); // 攻撃にならないように
-                    await navigate(tab.id!, v);
-                    await jsonFirst(summaryStream);
-                    const jobInfo = (await getJobInfoFromTable(tab.id!)) as [JobState, ...never[]];
+    await jsonFirst(summaryStream);
+    const jobInfo = (await getJobInfoFromTable(ids.tabId)) as [JobState, ...never[]];
+    switch (jobInfo[0]) {
+        case 0:
+        case 1:
+            await leave(ids.tabId, '1830');
+            await jsonFirst(editAttendaceStream);
+            break;
+        default:
+            break;
+    }
 
-                    switch (jobInfo[0]) {
-                        case 0:
-                            await attendance(tab.id!, '0930');
-                            await jsonFirst(editAttendaceStream);
-                            await leave(tab.id!, '1830');
-                            await jsonFirst(editAttendaceStream);
-                            resolve({ ...v, state: jobInfo[0], next: 3 });
-                        case 1:
-                        case 2:
-                        case 3:
-                            resolve({ ...v, state: jobInfo[0], next: jobInfo[0] });
-                    }
-                });
-                return from(fn);
-            })
-        )
-        .pipe(
-            tap((v) =>
-                // tslint:disable-next-line: no-object-literal-type-assertion
-                chrome.runtime.sendMessage({
-                    type: 'B2P@ModifiedAttendance',
-                    date: v,
-                } as ModifiedAttendanceMessage)
+    chrome.debugger.detach(debuggee, () =>
+        chrome.tabs.remove(ids.tabId, () => chrome.windows.remove(ids.windowId))
+    );
+};
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId.indexOf(MenuID.Base) === -1) {
+        return;
+    }
+    if (tab === undefined) {
+        return;
+    }
+    if (tab.url === undefined) {
+        return;
+    }
+    if (tab.url.indexOf('https://ssl.jobcan.jp/employee/attendance') !== -1) {
+        const checkedDates = await executeScriptAsync(
+            tab.id!,
+            `
+        Array.from(
+            document.querySelectorAll(
+              "#search-result > table > tbody > tr > td:nth-child(1) > input[type=checkbox]"
             )
-        )
-        .subscribe((v) => console.dir(v));
+          )
+            .filter(v => v.checked)
+            .map(v => v.getAttribute("data-href"));
+        `
+        );
+
+        switch (info.menuItemId) {
+            case MenuID.Attendance:
+                for (const attendUrl of checkedDates[0]) {
+                    await attendanceAsync(tab!.id!, `https://ssl.jobcan.jp${attendUrl}`);
+                }
+                break;
+            case MenuID.Leave:
+                for (const attendUrl of checkedDates[0]) {
+                    await leaveAsync(tab!.id!, `https://ssl.jobcan.jp${attendUrl}`);
+                }
+                break;
+        }
+        return;
+    }
 });
 
-const createControlWindow = (): Promise<ControllWindowIds> =>
-    new Promise((resolve) => {
-        chrome.windows.create(
-            { url: `chrome-extension://${chrome.runtime.id}/index.html`, width: 300, height: 300 },
-            (w) => {
-                resolve({
-                    windowId: w!.id,
-                    tabId: w!.tabs![0].id!,
-                });
-            }
-        );
-    });
+const createControlWindow = (
+    url: string = `chrome-extension://${chrome.runtime.id}/index.html`
+): Promise<ControllWindowIds> =>
+    new Promise((resolve) =>
+        chrome.windows.create({ url, width: 300, height: 300 }, (w) => {
+            resolve({
+                windowId: w!.id,
+                tabId: w!.tabs![0].id!,
+            });
+        })
+    );
 
 const fetchResponse = (
     debuggee: chrome.debugger.Debuggee,

@@ -7,5 +7,18 @@
         "scripts": ["./background.js"],
         "persistent": false
     },
-    "permissions": ["debugger", "contextMenus", "tabs", "https://ssl.jobcan.jp/employee*"]
+    "content_scripts": [
+        {
+            "matches": ["https://ssl.jobcan.jp/employee/attendance*"],
+            "js": ["content.js"]
+        }
+    ],
+    "permissions": [
+        "debugger",
+        "contextMenus",
+        "tabs",
+        "activeTab",
+        "https://ssl.jobcan.jp/employee*",
+        "https://ssl.jobcan.jp/employee/attendance*"
+    ]
 }
