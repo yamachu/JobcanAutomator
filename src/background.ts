@@ -259,6 +259,10 @@ const getJobInfoFromTable = (tabId: number) =>
 if (document.querySelector('#logs-table > div').children.length === 0) {
     // '未打刻';
     0;
+} else if (Array.from(document.querySelectorAll('#logs-table > div > table > tbody > tr'))
+.find(v => v.children[0].innerText.trim() === '入室') !== undefined) {
+    // 当日で退勤とかが行われていない状態
+    4;
 } else {
     const att = Array.from(document.querySelectorAll('#logs-table > div > table > tbody > tr'))
     .find(v => v.children[0].innerText.trim() === '出勤') !== undefined ? 1 : 0;

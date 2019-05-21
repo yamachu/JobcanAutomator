@@ -11,7 +11,7 @@ export interface SelectDatesMessage {
     dates: Array<DateObjectSummary & { index: number }>;
 }
 
-export type JobState = -1 | 0 | 1 | 2 | 3;
+export type JobState = -1 | 0 | 1 | 2 | 3 | 4;
 
 export interface ModifiedAttendanceMessage {
     type: 'B2P@ModifiedAttendance';
