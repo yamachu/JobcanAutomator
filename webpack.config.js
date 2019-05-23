@@ -25,5 +25,16 @@ module.exports = function(env, argv) {
                 ],
             },
         },
+        {
+            entry: './content/content.js',
+            output: {
+                path: path.resolve(__dirname, output_path),
+                filename: 'content.js',
+            },
+            resolve: {
+                extensions: ['.js'],
+            },
+            devtool: argv.mode === 'production' ? false : 'source-map',
+        },
     ];
 };
